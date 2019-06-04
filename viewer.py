@@ -106,6 +106,7 @@ class pdfViewer(wx.ScrolledWindow):
     progress bar can be displayed by setting self.ShowLoadProgress = True (default)
     """
     def __init__(self, parent, nid, pos, size, style):
+
         """
         Default class constructor.
 
@@ -120,6 +121,7 @@ class pdfViewer(wx.ScrolledWindow):
         :param integer `style`: the button style (unused);
 
         """
+        print( 'ssstarting viewer ...' )
         wx.ScrolledWindow.__init__(self, parent, nid, pos, size,
                                 style | wx.NO_FULL_REPAINT_ON_RESIZE)
         self.SetBackgroundStyle(wx.BG_STYLE_CUSTOM)     # recommended in wxWidgets docs
@@ -188,6 +190,8 @@ class pdfViewer(wx.ScrolledWindow):
         :param `pdf_file`: can be either a string holding
         a filename path or a file-like object.
         """
+        print( 'viewer LoadFile loading {} ...'.format(pdf_file) )
+        print( type(pdf_file)  , isinstance(pdf_file, string_types) )
         def create_fileobject(filename):
             """
             Create and return a file object with the contents of filename,
@@ -640,7 +644,7 @@ class pypdfProcessor(object):
             fonts = currentobject["/Resources"].getObject()['/Font']
             for key in fonts:
                 pdf_fonts[key] = fonts[key]['/BaseFont'][1:]     # remove the leading '/'
-        except KeyError:
+        except (KeyError, TypeError):
             pass
         return pdf_fonts
 
