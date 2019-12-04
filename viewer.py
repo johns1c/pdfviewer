@@ -148,6 +148,7 @@ class pdfViewer(wx.ScrolledWindow):
         Redraw on resize.
         """
         if self.resizing:
+            self.page_buffer_valid = False
             self.Render()
             self.resizing = False
         event.Skip()
@@ -192,7 +193,7 @@ class pdfViewer(wx.ScrolledWindow):
         a filename path or a file-like object.
         """
         print( 'viewer LoadFile loading {} ...'.format(pdf_file) )
-        print( type(pdf_file)  , isinstance(pdf_file, string_types) )
+        if VERBOSE : print( type(pdf_file)  , isinstance(pdf_file, string_types) )
         def create_fileobject(filename):
             """
             Create and return a file object with the contents of filename,
@@ -622,7 +623,7 @@ class pypdfProcessor(object):
                 args[0].Scale(gc.font_scale)
             if drawcmd == 'ConcatTransform':
                 cm = gc.CreateMatrix(*args, **kwargs)
-                print( 'Concat transform ' , cm.Get() ) 
+                if VERBOSE: print( 'Concat transform ' , cm.Get() ) 
                 args = (cm,)
             if drawcmd == 'CreatePath':
                 gp = drawdict[drawcmd](*args, **kwargs)
@@ -1030,7 +1031,7 @@ class pypdfProcessor(object):
         g = self.gstate
       
         if g.clippingPath == None :
-            print( "empty" )
+            if VERBOSE : print( "clipping path is empty" )
             g.clippingPath = []
             
         g.clippingPath.append( path )
@@ -1046,6 +1047,7 @@ class pypdfProcessor(object):
         stream = xobject[name]
         if stream.get('/Subtype') == '/Form':
             # insert contents into current page drawing
+            if VERBOSE: print( "Handling /Form ") 
             if not name in self.formdrawings:       # extract if not already done
                 pdf_fonts = self.FetchFonts(stream)
                 x_bbox = stream.get('/BBox')
@@ -1055,6 +1057,7 @@ class pypdfProcessor(object):
                 oplist.extend(form_ops)                 # add form contents
                 oplist.append(([], 'Q'))                # restore original state
                 self.formdrawings[name] = self.ProcessOperators(oplist, pdf_fonts)
+                if VERBOSE: print( f'Form has {len(form_ops)} operations ' ) 
             dlist.extend(self.formdrawings[name])
         elif stream.get('/Subtype') == '/Image':
             width = stream['/Width']
@@ -1066,17 +1069,24 @@ class pypdfProcessor(object):
             x_palette = None
             try :
                 if "/Indexed" in x_color :
-                        xc = x_color
-                        x_indexed = True
-                        x_palette_size = x_color[2]
-                        x_palette = x_color[3] 
-                        if isinstance( x_palette , PyPDF2.generic.IndirectObject ):
-                            x_palette = x_palette.getObject() 
-                        x_color = x_color[1]
-                        if isinstance( x_color , PyPDF2.generic.IndirectObject ):
-                            x_color = x_color.getObject() 
+                    if VERBOSE: print( f"x_colour stream for indexed image {x_color} " )
+                    xc = x_color
+                    x_indexed = True
+                    x_palette_size = x_color[2]
+                    x_palette = x_color[3] 
+                    if isinstance( x_palette , PyPDF2.generic.IndirectObject ):
+                        x_palette = x_palette.getObject() 
+                        if isinstance( x_palette , PyPDF2.generic.EncodedStreamObject ) :
+                            x_palette = x_palette.getData() 
+                    else :
+                        if VERBOSE: print( "palette is in line " ) 
+                    x_color = x_color[1]
+                    if isinstance( x_color , PyPDF2.generic.IndirectObject ):
+                        x_color = x_color.getObject() 
+                else:
+                    if VERBOSE:  print( "Colour NOT indexed" )                 
             except :
-                print( stream) 
+                if VERBOSE: print( 'Issue with indexed colour image stream->' , stream) 
                             
             filters = stream["/Filter"]
             decode_parms = stream[ "/DecodeParms" ]
@@ -1117,7 +1127,8 @@ class pypdfProcessor(object):
                 print( "Bits {} Palette size {} Palette len {} ".format( x_depth , x_palette_size, len(x_palette) ) )
                 print( x_palette , type( x_palette) )
                 print("---------------" ) 
-            elif x_color == '/DeviceGray' and x_depth in (1,2,4,8) :
+                         
+            elif (x_color == '/DeviceGray' and x_depth in (1,2,4,8))  :
                 if x_depth == 1 :
                     palette = bytes.fromhex( '000000FFFFFF' )
                 elif x_depth == 2 :
@@ -1132,7 +1143,17 @@ class pypdfProcessor(object):
                 palette_size = len(palette) 
                 RGBdata = self.DeindexImage( width , height, data, x_depth , palette_size , palette  ) 
                 bitmap = wx.Bitmap.FromBuffer(width, height, RGBdata) 
+                
+            elif (x_color is None and x_depth == 1 ) :  
+                palette = bytes.fromhex( '000000FFFFFF' )
+
+                #palette = bytes( [x for x in range(256) for z in range(3) ])
+                palette_size = len(palette) 
+                RGBdata = self.DeindexImage( width , height, data, x_depth , palette_size , palette  ) 
+                bitmap = wx.Bitmap.FromBuffer(width, height, RGBdata) 
             
+            elif  x_color == None:
+                print( 'Unable to print image with no colour space' ) 
             
             else:
                 print( '{} colour space is not implemented'.format( x_color ) )
@@ -1191,7 +1212,7 @@ class pypdfProcessor(object):
                     mask_bitmap = wx.Bitmap( mask_data, mask_height , mask_width , depth=1 )
                     mask = wx.Mask( mask_bitmap )
                     bitmap.SetMask(mask)
-                        
+                    
             dlist.append(  ['DrawBitmap', (bitmap, 0, 0-height, width, height), {}] )
             return dlist
 
@@ -1257,10 +1278,9 @@ class pypdfProcessor(object):
         assert( len(RGBdata) == len(d2) )
         return d2
    
-        
     def DeindexImage( self , width , height, data, x_depth , x_palette_size , x_palette , palette_chunk=3  )     :
         # 
-        # for each input pel (of x_depth bits) find the corresponding n byte chunk in the pallette and add it to the
+        # for each input pel (of x_depth bits) find the corresponding n byte chunk in the palette and add it to the
         # output data.  The n chunk allows us to index RGB, CMYK or generate a 8bit mask 
         #  
         
@@ -1454,7 +1474,7 @@ class pdfState(object):
         #xobject = self.page["/Resources"].getObject()['/ExtGState']
         #stream = xobject[name]
         
-        #print ( "Loading extended graphics state " , resource )
+        if VERBOSE: print ( "Loading extended graphics state " , resource )
         
         for EGS in resource.keys() :
             EGV = resource.get( EGS )
@@ -1474,7 +1494,7 @@ class pdfState(object):
             elif EGS ==  "/LC" :  # Line Cap
                 self.lineCapStyle = {0: wx.CAP_BUTT, 1: wx.CAP_ROUND, 2: wx.CAP_PROJECTING}[float(EGV)]
             elif EGS ==  "/LJ" :  # Line Join
-                g.lineJoinStyle = {0: wx.JOIN_MITER, 1: wx.JOIN_ROUND, 2: wx.JOIN_BEVEL}[float(EGV)]
+                self.lineJoinStyle = {0: wx.JOIN_MITER, 1: wx.JOIN_ROUND, 2: wx.JOIN_BEVEL}[float(EGV)]
             elif EGS ==  "/ML" :  # Mitre Limit
                 self.miterLimit = float(EGV)
             elif EGS ==  "/D" :  # Mitre Limit
@@ -1574,7 +1594,7 @@ class pdfPrintout(wx.Printout):
         if not mupdf:
             gc.Translate(0, height)
         if wx.PlatformInfo[1] == 'wxMSW' and have_cairo:
-            print( 'Device scale adjusted for PPI' )
+            if VERBOSE: print( 'Device scale adjusted for PPI' )
             device_scale = wx.ClientDC(self.view).GetPPI()[0]/72.0   # pixels per inch/ppi
             gc.font_scale = 1.0 / device_scale
 
