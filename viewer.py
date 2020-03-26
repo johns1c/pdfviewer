@@ -1068,7 +1068,9 @@ class pypdfProcessor(object):
             x_indexed = False
             x_palette = None
             try :
-                if "/Indexed" in x_color :
+                if x_color is None :
+                    if VERBOSE:  print( "Colour NOT indexed - in fact no colour at all" )                 
+                elif "/Indexed" in x_color :
                     if VERBOSE: print( f"x_colour stream for indexed image {x_color} " )
                     xc = x_color
                     x_indexed = True
@@ -1087,14 +1089,18 @@ class pypdfProcessor(object):
                     if VERBOSE:  print( "Colour NOT indexed" )                 
             except :
                 if VERBOSE: print( 'Issue with indexed colour image stream->' , stream) 
+                raise
                             
             filters = stream["/Filter"]
             decode_parms = stream[ "/DecodeParms" ]
             x_masked = stream.get("/Mask" )
             x_stencil = stream[ '/ImageMask'  ]
+            
+            compressed_length = len(stream._data) 
+            print( f'compressed stream length {compressed_length} ' )
             data = self.UnpackImage( stream._data, filters, decode_parms)
             
-            print( "Image {}   {} x {} x {} data length {} ".format( x_color , width , height , x_depth , len(data) ) )
+            print( f"Image {x_color}   {width} x {height} x {x_depth} data length={len(data)} " )
             #JPEG image is self defining 
             if '/DCT' in filters or '/DCTDecode' in filters:
                 istream = BytesIO(data)
@@ -1109,8 +1115,8 @@ class pypdfProcessor(object):
                 except:
                     print( 'Error creating bitmap w={} h={} data length {} (should be w x h x 3 )'.format(width,height,len(data) ) )
                 
-            elif  x_color == None:
-                print( 'Unable to print image with no colour space' ) 
+            elif  (x_color is None and x_depth != 1 ) :
+                print( 'Unable to print image with no colour space unless 1 bit b&W' ) 
             
                       
             elif x_indexed and x_color == '/DeviceRGB' :
@@ -1167,7 +1173,7 @@ class pypdfProcessor(object):
             if x_masked == None:
                 pass
             elif  isinstance( x_masked , list)  : 
-                
+                print( 'Image is masked' )
                 ck_bytes = bytes( bytearray( x_masked )  )
                 
                 ( r1,r9,g1,g9,b1,b9) = x_masked
