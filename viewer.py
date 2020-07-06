@@ -16,7 +16,7 @@
 #               Chris Johnson, Significant additions but some require modded pypdf2 
 #               rolled in 3.7 changes to remove wx.NewId  
 # Tags:         phoenix-port, documented, unittest
-#
+#  decode parms added 
 #----------------------------------------------------------------------------
 
 """
@@ -192,8 +192,6 @@ class pdfViewer(wx.ScrolledWindow):
         :param `pdf_file`: can be either a string holding
         a filename path or a file-like object.
         """
-        print( 'viewer LoadFile loading {} ...'.format(pdf_file) )
-        if VERBOSE : print( type(pdf_file)  , isinstance(pdf_file, string_types) )
         def create_fileobject(filename):
             """
             Create and return a file object with the contents of filename,
@@ -346,6 +344,7 @@ class pdfViewer(wx.ScrolledWindow):
 
         self.winwidth, self.winheight = self.GetClientSize()
         if self.winheight < 100:
+            print( 'window height to small to display ? ' )
             return
         self.Ypage = self.pageheight + self.nom_page_gap
         if self.zoomscale > 0.0:
@@ -355,6 +354,8 @@ class pdfViewer(wx.ScrolledWindow):
                 self.scale = self.winwidth / self.pagewidth
             else:                           # fit page
                 self.scale = self.winheight / self.pageheight
+        if self.scale == 0.0: # this could happen if the window was not yet initialized
+            self.scale = 1.0
         self.Xpagepixels = int(round(self.pagewidth*self.scale))
         self.Ypagepixels = int(round(self.Ypage*self.scale))
 
@@ -525,7 +526,10 @@ class mupdfProcessor(object):
         matrix = fitz.Matrix(scale, scale)
         try:
             pix = page.getPixmap(matrix=matrix)   # MUST be keyword arg(s)
-            bmp = wx.Bitmap.FromBufferRGBA(pix.width, pix.height, pix.samples)
+            if [int(v) for v in fitz.version[1].split('.')] >= [1,15,0]:
+                bmp = wx.Bitmap.FromBuffer(pix.width, pix.height, pix.samples)
+            else:
+                bmp = wx.Bitmap.FromBufferRGBA(pix.width, pix.height, pix.samples)
             gc.DrawBitmap(bmp, 0, 0, pix.width, pix.height)
             self.zoom_error = False
         except (RuntimeError, MemoryError):
@@ -617,6 +621,7 @@ class pypdfProcessor(object):
                     'DrawBitmap': gc.DrawBitmap,
                     'CreatePath': gc.CreatePath,
                     'DrawPath': gc.DrawPath }
+        print ( f'{pageno=}' )             
         for drawcmd, args, kwargs in self.pagedrawings[pageno]:
             # scale font if requested by printer DC
             if drawcmd == 'SetFont' and hasattr(gc, 'font_scale'):
@@ -633,7 +638,11 @@ class pypdfProcessor(object):
             if drawcmd in drawdict:
                 if drawdict == 'DrawBitmap' :
                     print( drawcmd , *args ) 
-                drawdict[drawcmd](*args, **kwargs)
+                try :    ## cjcj 2020-07    
+                    drawdict[drawcmd](*args, **kwargs)
+                except :
+                   print( f'error with {drawcmd=}  {args} {kwargs} ' )
+                   raise
                 # reset font scaling in case RenderPage call is repeated
                 if drawcmd == 'SetFont' and hasattr(gc, 'font_scale'):
                     args[0].Scale(1.0/gc.font_scale)
@@ -651,8 +660,9 @@ class pypdfProcessor(object):
         pdf_fonts = {}
         try:
             fonts = currentobject["/Resources"].getObject()['/Font']
-            for key in fonts:
-                pdf_fonts[key] = fonts[key]['/BaseFont'][1:]     # remove the leading '/'
+            if fonts is not None :
+                for key in fonts:
+                    pdf_fonts[key] = fonts[key]['/BaseFont'][1:]     # remove the leading '/'
         except KeyError:
             pass
         except TypeError:    # None is not iterable
@@ -818,7 +828,7 @@ class pypdfProcessor(object):
                     drawlist.extend(dlist)
             else:                       # report once
                 if operator not in self.unimplemented:
-                    if VERBOSE: print('PDF operator {} is not implemented   (operand {})'.format(operator, operand))
+                    if VERBOSE: print(f'PDF {operator=} is not implemented  {operand=} ')
                     self.unimplemented[operator] = 1
 
         # Fix bitmap transform. Move the scaling from any transform matrix that precedes
@@ -937,8 +947,9 @@ class pypdfProcessor(object):
         g = self.gstate
         x = g.textMatrix[4]
         y = g.textMatrix[5] + g.textRise
-
-        wid, ht, descend, lead = dc.GetFullTextExtent(textitem, f)
+        if g.wordSpacing > 0:
+            textitem += b' '
+        wid, ht, descend, x_lead = dc.GetFullTextExtent(textitem, f)
         if have_rlwidth and self.knownfont:   # use ReportLab stringWidth if available
             width = stringWidth(textitem, g.font, g.fontSize)
         else:
@@ -1232,8 +1243,14 @@ class pypdfProcessor(object):
         height = settings['/H']
         x_depth = settings['/BPC']
         filters = settings['/F']
-        decode_parms = {}
-        item = self.AddBitmapNew(data, format ,width, height, filters , decode_parms)
+        if '/DecodeParms'  in settings :
+            decode_parms =  settings['/DecodeParms' ]
+        elif '/DP' in settings :
+            decode_parms =  settings['/DP' ]
+        else:
+            decode_parms = None 
+
+        item = self.AddBitmap(data, width, height, filters,decode_parms )
         if item:            # may be unimplemented
             dlist.append(item)
         return dlist
@@ -1342,14 +1359,14 @@ class pypdfProcessor(object):
         """
         Add wx.Bitmap from data, processed by filters.
         """
-        import pillow
+        
         
         if '/LZWDecode' in filters :
             data = LZWDecode.decode(data)
         if '/A85' in filters or '/ASCII85Decode' in filters:
             data = ASCII85Decode.decode(data)
         if '/Fl' in filters or '/FlateDecode' in filters:
-            data = FlateDecode.decode(data, None)
+            data = FlateDecode.decode(data, decode_parms )
         if '/CCF' in filters or  '/CCITTFaxDecode' in filters:
             data = CCITTFaxDecode.decode(data, decodeParms=decode_parms)   
         
