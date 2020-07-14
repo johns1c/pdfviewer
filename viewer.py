@@ -50,6 +50,8 @@ except ImportError:
         from PyPDF2 import PdfFileReader
         from PyPDF2.pdf import ContentStream, PageObject
         from PyPDF2.filters import ASCII85Decode, FlateDecode , LZWDecode, CCITTFaxDecode  
+        from PyPDF2.toUnicode import FetchFontExtended , as_text
+        from PyPDF2.utils import glyph2unicode 
         if VERBOSE: print('pdfviewer using PyPDF2')
     except ImportError:
         msg = "PyMuPDF or PyPDF2 must be available to use pdfviewer"
@@ -122,7 +124,7 @@ class pdfViewer(wx.ScrolledWindow):
         :param integer `style`: the button style (unused);
 
         """
-        print( 'ssstarting viewer ...' )
+        print( 'starting viewer ...' )
         wx.ScrolledWindow.__init__(self, parent, nid, pos, size,
                                 style | wx.NO_FULL_REPAINT_ON_RESIZE)
         self.SetBackgroundStyle(wx.BG_STYLE_CUSTOM)     # recommended in wxWidgets docs
@@ -332,6 +334,7 @@ class pdfViewer(wx.ScrolledWindow):
         self.frompage = 0
         self.topage = 0
         device_scale = wx.ClientDC(self).GetPPI()[0]/72.0   # pixels per inch/points per inch
+        assert device_scale > 0 
         self.font_scale_metrics =  1.0
         self.font_scale_size = 1.0
         # for Windows only with wx.GraphicsContext the rendered font size is too big
@@ -419,7 +422,6 @@ class pdfViewer(wx.ScrolledWindow):
             # Initialize the buffer bitmap.
             self.pagebuffer = wx.Bitmap(self.pagebufferwidth, self.pagebufferheight)
             self.pdc = wx.MemoryDC(self.pagebuffer)     # must persist
-
             gc = GraphicsContext.Create(self.pdc)       # Cairo/wx.GraphicsContext API
 
             # white background
@@ -568,15 +570,19 @@ class pypdfProcessor(object):
 
     def Progress(self, ptype, value):
         " This function is called at regular intervals during Drawfile"
-        if ptype == 'start':
-            pmsg = 'Reading pdf file'
-            self.progbar = wx.ProgressDialog('Load file', pmsg, value, None,
-                         wx.PD_AUTO_HIDE|
-                            wx.PD_ESTIMATED_TIME|wx.PD_REMAINING_TIME)
+        " changed so that it is just hidden and restored rather than being destroyed   cj 2020-07 "
+        if ptype == 'start' and self.progbar is None :
+                pmsg = 'Reading pdf file'
+                self.progbar = wx.ProgressDialog('Load file', pmsg, value, None,
+                             wx.PD_AUTO_HIDE|
+                                wx.PD_ESTIMATED_TIME|wx.PD_REMAINING_TIME)
+        elif ptype == 'start' :
+            self.progbar.Show()
         elif ptype == 'progress':
             self.progbar.Update(value)
         elif ptype == 'end':
-            self.progbar.Destroy()
+            self.progbar.Hide()
+            #self.progbar.Destroy()    # cjcj 2020-07
 
     def DrawFile(self, frompage, topage):
         """
@@ -621,14 +627,13 @@ class pypdfProcessor(object):
                     'DrawBitmap': gc.DrawBitmap,
                     'CreatePath': gc.CreatePath,
                     'DrawPath': gc.DrawPath }
-        print ( f'{pageno=}' )             
+        print ( f'rendering {pageno=}', flush=True )             
         for drawcmd, args, kwargs in self.pagedrawings[pageno]:
             # scale font if requested by printer DC
             if drawcmd == 'SetFont' and hasattr(gc, 'font_scale'):
                 args[0].Scale(gc.font_scale)
             if drawcmd == 'ConcatTransform':
                 cm = gc.CreateMatrix(*args, **kwargs)
-                if VERBOSE: print( 'Concat transform ' , cm.Get() ) 
                 args = (cm,)
             if drawcmd == 'CreatePath':
                 gp = drawdict[drawcmd](*args, **kwargs)
@@ -636,8 +641,6 @@ class pypdfProcessor(object):
             elif drawcmd == 'DrawPath':
                 args = (gp, args[1])
             if drawcmd in drawdict:
-                if drawdict == 'DrawBitmap' :
-                    print( drawcmd , *args ) 
                 try :    ## cjcj 2020-07    
                     drawdict[drawcmd](*args, **kwargs)
                 except :
@@ -659,10 +662,14 @@ class pypdfProcessor(object):
         " Return the standard fonts in current page or form"
         pdf_fonts = {}
         try:
+            
             fonts = currentobject["/Resources"].getObject()['/Font']
             if fonts is not None :
                 for key in fonts:
                     pdf_fonts[key] = fonts[key]['/BaseFont'][1:]     # remove the leading '/'
+        except AttributeError:   
+            if '/Resources' in currentobject :
+                raise
         except KeyError:
             pass
         except TypeError:    # None is not iterable
@@ -768,6 +775,8 @@ class pypdfProcessor(object):
                 g.textLineMatrix[5] += float(operand[1])
                 g.textMatrix = copy.copy(g.textLineMatrix)
             elif operator == 'Tf':      # text font
+                current_font_name = operand[0]
+                current_font, current_font_encoding = FetchFontExtended(self.page , current_font_name , Debug=False)
                 g.font = pdf_fonts[operand[0]]
                 g.fontSize = float(operand[1])
             elif operator == 'T*':      # next line via leading
@@ -775,15 +784,13 @@ class pypdfProcessor(object):
                 g.textLineMatrix[5] -= g.leading if g.leading is not None else 0
                 g.textMatrix = copy.copy(g.textLineMatrix)
             elif operator == 'Tj':      # show text
-                
-                operand[0] = operand[0].decode('latin-1').encode() 
-                drawlist.extend(self.DrawTextString( operand[0] ))
+                drawlist.extend(self.DrawTextString(as_text( operand[0],encoding=current_font_encoding)  ))
             elif operator == "'" :      # equiv to T* and Tj 
                 g.textLineMatrix[4] += 0
                 g.textLineMatrix[5] -= g.leading if g.leading is not None else 0
                 g.textMatrix = copy.copy(g.textLineMatrix)
                 drawlist.extend(self.DrawTextString(
-                                       operand[0].decode('latin-1')))
+                                       as_text( operand[0],encoding=current_font_encoding) ))
             elif operator == '"' :      # equiv to set word spacing, set character spacing T* and Tj 
                 g.wordSpacing = float(operand[0])
                 g.charSpacing = float(operand[1])
@@ -791,7 +798,7 @@ class pypdfProcessor(object):
                 g.textLineMatrix[5] -= g.leading if g.leading is not None else 0
                 g.textMatrix = copy.copy(g.textLineMatrix)
                 drawlist.extend(self.DrawTextString(
-                                       operand[2].decode('latin-1')))
+                                       as_text( operand[2],encoding=current_font_encoding) ))
             elif operator == 'TJ' :     # show text and spacing
                 spacing = False
                 for el in operand :
@@ -807,8 +814,9 @@ class pypdfProcessor(object):
                             pass
                         else :     
                             
-                            try:
-                                drawlist.extend(self.DrawTextString( e2 ) )
+                            try:  
+                                e2a = as_text( e2,encoding=current_font_encoding) 
+                                drawlist.extend(self.DrawTextString( e2a ) )
                             except :
                                 try:
                                     e3 = "?" * len(e2) 
@@ -828,7 +836,7 @@ class pypdfProcessor(object):
                     drawlist.extend(dlist)
             else:                       # report once
                 if operator not in self.unimplemented:
-                    if VERBOSE: print(f'PDF {operator=} is not implemented  {operand=} ')
+                    if VERBOSE: print(f'PDF {operator=} is not implemented  {operand=} 839')
                     self.unimplemented[operator] = 1
 
         # Fix bitmap transform. Move the scaling from any transform matrix that precedes
@@ -873,9 +881,10 @@ class pypdfProcessor(object):
         elif pdfont.count('symbol'):
             family = wx.FONTFAMILY_DEFAULT
             font = 'Symbol'
-        elif pdfont.count('zapfdingbats'):
+        elif pdfont.count('ingbats'):
             family = wx.FONTFAMILY_DEFAULT
             font = 'Wingdings'
+           
         else:
             if pdfont in missing_fonts :
                 pass
@@ -910,7 +919,7 @@ class pypdfProcessor(object):
         
         dlist.append( ['SetFont', (f1, g.GetFillRGBA() ), {}])
         if g.wordSpacing > 0:
-            textlist = text.split(b' ')
+            textlist = text.split()  # was split on binary blank cjcj 2020-07
         else:
             textlist = [text,]
         for item in textlist:
@@ -923,11 +932,10 @@ class pypdfProcessor(object):
         g = self.gstate
         f0  = self.SetFont(g.font, g.fontSize)
         f0.Scale(self.parent.font_scale_metrics)
-        #print ( "font scale"  , f0.Scale() ) 
         f1  = self.SetFont(g.font, g.fontSize)
         f1.Scale(self.parent.font_scale_size)
         
-        dlist.append(self.DrawTextItem(b'_', f0))
+        dlist.append(self.DrawTextItem('_', f0))
         return dlist
         
 
@@ -948,7 +956,7 @@ class pypdfProcessor(object):
         x = g.textMatrix[4]
         y = g.textMatrix[5] + g.textRise
         if g.wordSpacing > 0:
-            textitem += b' '
+            textitem += ' '
         wid, ht, descend, x_lead = dc.GetFullTextExtent(textitem, f)
         if have_rlwidth and self.knownfont:   # use ReportLab stringWidth if available
             width = stringWidth(textitem, g.font, g.fontSize)
@@ -1058,7 +1066,8 @@ class pypdfProcessor(object):
         stream = xobject[name]
         if stream.get('/Subtype') == '/Form':
             # insert contents into current page drawing
-            if VERBOSE: print( "Handling /Form ") 
+            if name == '/Fm11' :
+                pass
             if not name in self.formdrawings:       # extract if not already done
                 pdf_fonts = self.FetchFonts(stream)
                 x_bbox = stream.get('/BBox')
@@ -1068,7 +1077,6 @@ class pypdfProcessor(object):
                 oplist.extend(form_ops)                 # add form contents
                 oplist.append(([], 'Q'))                # restore original state
                 self.formdrawings[name] = self.ProcessOperators(oplist, pdf_fonts)
-                if VERBOSE: print( f'Form has {len(form_ops)} operations ' ) 
             dlist.extend(self.formdrawings[name])
         elif stream.get('/Subtype') == '/Image':
             width = stream['/Width']
@@ -1080,9 +1088,8 @@ class pypdfProcessor(object):
             x_palette = None
             try :
                 if x_color is None :
-                    if VERBOSE:  print( "Colour NOT indexed - in fact no colour at all" )                 
+                    print( 'Image with No /ColorSpace' ) 
                 elif "/Indexed" in x_color :
-                    if VERBOSE: print( f"x_colour stream for indexed image {x_color} " )
                     xc = x_color
                     x_indexed = True
                     x_palette_size = x_color[2]
@@ -1111,7 +1118,6 @@ class pypdfProcessor(object):
             print( f'compressed stream length {compressed_length} ' )
             data = self.UnpackImage( stream._data, filters, decode_parms)
             
-            print( f"Image {x_color}   {width} x {height} x {x_depth} data length={len(data)} " )
             #JPEG image is self defining 
             if '/DCT' in filters or '/DCTDecode' in filters:
                 istream = BytesIO(data)
@@ -1197,7 +1203,6 @@ class pypdfProcessor(object):
 
             else   : 
                 x_mo     = stream["/Mask"].getObject()
-                #print("     >" , x_mo                 )  
                 filters, decode_parms
                 mask_filters       = x_mo[ '/Filter']
                 mask_decode_parms  = x_mo[ "/DecodeParms" ]
@@ -1206,7 +1211,6 @@ class pypdfProcessor(object):
                 mask_width         = x_mo[ '/Width' ]
                     
                 mask_data  = self.UnpackImage( mask_data , mask_filters, mask_decode_parms)
-                #print(" mask data (length {} )".format(len(mask_data) ) , mask_data                ) 
                 
                 if True :
                     '''
@@ -1217,7 +1221,6 @@ class pypdfProcessor(object):
                     palette = bytes.fromhex( '000000FFFFFF' )
                     palette_size = len(palette) 
                     mask_RGB = self.DeindexImage( mask_width, mask_height, mask_data, 1, palette_size , palette  ) 
-                    #print( " RGB mask data length {}".format( len(mask_RGB)   ) )  
                     mask_bitmap = wx.Bitmap.FromBuffer(mask_width, mask_height, mask_RGB)
                     mask = wx.Mask(mask_bitmap, wx.WHITE )  
                     bitmap.SetMask(mask)
@@ -1264,7 +1267,6 @@ class pypdfProcessor(object):
             data = FlateDecode.decode(data, None)
         if '/CCF' in filters or  '/CCITTFaxDecode' in filters:
             data = CCITTFaxDecode.decode(data, decodeParms=decode_parms)   
-        #print( "data length {}".format(len(data)))   
         return data
         
     def FixColour(  self, RGBdata , colour_key_limits  , colour_key_fix) :
@@ -1382,7 +1384,7 @@ class pypdfProcessor(object):
                 from PIL import Image
 
                 image = Image.frombytes(image_format, (width,height), data)
-                print( "error" )
+                print( "Bitmap from buffer image display problem" ) 
                 
                 return []       # any error
         return ['DrawBitmap', (bitmap, 0, 0-height, width, height), {}]
@@ -1497,8 +1499,6 @@ class pdfState(object):
         #xobject = self.page["/Resources"].getObject()['/ExtGState']
         #stream = xobject[name]
         
-        if VERBOSE: print ( "Loading extended graphics state " , resource )
-        
         for EGS in resource.keys() :
             EGV = resource.get( EGS )
             if EGS == '/Type' :
@@ -1554,7 +1554,7 @@ class pdfState(object):
                 print(  "/ExtGState resource not properly handled yet {} {}".format( EGS , EGV ) )
             elif EGS ==  "/BG" :  # Black Generation 
                 print(  "/ExtGState resource not properly handled yet {} {}".format( EGS , EGV ) )
-            elif EGS ==  "/BM" :  # Bland Mode
+            elif EGS ==  "/BM" :  # Blend Mode
                 self.blendMode = EGV 
 
             else :
