@@ -601,6 +601,7 @@ class pypdfProcessor(object):
             self.page = self.pdfdoc.getPage(pageno)
             numpages_generated += 1
             pdf_fonts = self.FetchFonts(self.page)
+            
             self.pagedrawings[pageno] = self.ProcessOperators(
                                     self.page.extractOperators(), pdf_fonts)
             if rp: self.Progress('progress', numpages_generated)
@@ -627,7 +628,7 @@ class pypdfProcessor(object):
                     'DrawBitmap': gc.DrawBitmap,
                     'CreatePath': gc.CreatePath,
                     'DrawPath': gc.DrawPath }
-        print ( f'rendering {pageno=}', flush=True )             
+        print ( f'rendering {pageno=} of {len(self.pagedrawings)} ', flush=True )             
         for drawcmd, args, kwargs in self.pagedrawings[pageno]:
             # scale font if requested by printer DC
             if drawcmd == 'SetFont' and hasattr(gc, 'font_scale'):
@@ -660,20 +661,34 @@ class pypdfProcessor(object):
 
     def FetchFonts(self, currentobject):
         " Return the standard fonts in current page or form"
+        KEY_BaseFont =  '/BaseFont' 
+        KEY_FontDescriptor = '/FontDescriptor' 
+        KEY_FontName = '/FontName'
+
         pdf_fonts = {}
         try:
             
             fonts = currentobject["/Resources"].getObject()['/Font']
             if fonts is not None :
                 for key in fonts:
-                    pdf_fonts[key] = fonts[key]['/BaseFont'][1:]     # remove the leading '/'
+                    if KEY_BaseFont in fonts[key] :
+                        pdf_fonts[key] = fonts[key][KEY_BaseFont][1:]   # without leading / 
+                    elif KEY_FontDescriptor  in fonts[key] :
+                        pdf_fonts[key] = fonts[key][KEY_FontDescriptor][KEY_FontName]
+                    else :
+                        pdf_fonts[key] = 'No Base Font'  
         except AttributeError:   
             if '/Resources' in currentobject :
                 raise
         except KeyError:
+            print( f'£$ key error getting font {key=}{fonts[key]}  ')
             pass
         except TypeError:    # None is not iterable
-            pass
+            if fonts is None :
+                pass
+            else :
+                print( f'£$ key error getting font {key=} {fonts[key]} ')
+                pass
         return pdf_fonts
 
     def ProcessOperators(self, opslist, pdf_fonts):
@@ -777,7 +792,13 @@ class pypdfProcessor(object):
             elif operator == 'Tf':      # text font
                 current_font_name = operand[0]
                 current_font, current_font_encoding = FetchFontExtended(self.page , current_font_name , Debug=False)
-                g.font = pdf_fonts[operand[0]]
+                try:
+                    g.font = pdf_fonts[operand[0]]
+                except :
+                    print( f' issue with font operand in command {operator} {operand[0]} {operand[1]} ' )
+                    print(pdf_fonts)
+                    print( '----------------------------' )                     
+                    raise 
                 g.fontSize = float(operand[1])
             elif operator == 'T*':      # next line via leading
                 g.textLineMatrix[4] += 0
