@@ -36,7 +36,6 @@ from six import BytesIO, string_types
 import wx
 
 VERBOSE = True
-
 try:
     # see http://pythonhosted.org/PyMuPDF - documentation & installation
     import fitz
@@ -80,6 +79,7 @@ if not mupdf:
         if not isinstance(content, ContentStream):
             content = ContentStream(content, self.pdf)
         for op in content.operations:
+        
             if type(op[1] == bytes):
                 op = (op[0], op[1].decode())
             ops.append(op)
@@ -509,7 +509,8 @@ class mupdfProcessor(object):
             self.pdfdoc = fitz.open(pathname, stream)
 
         self.numpages = self.pdfdoc.pageCount
-        page = self.pdfdoc.loadPage(0)
+        self.page = self.pdfdoc.loadPage(0)
+        self.current_object = self.page
         self.pagewidth = page.bound().width
         self.pageheight = page.bound().height
         self.page_rect = page.bound()
@@ -599,6 +600,7 @@ class pypdfProcessor(object):
             self.gstate = pdfState()    # state is reset with every new page
             self.saved_state = []
             self.page = self.pdfdoc.getPage(pageno)
+            self.current_object = self.page
             numpages_generated += 1
             pdf_fonts = self.FetchFonts(self.page)
             
@@ -696,9 +698,19 @@ class pypdfProcessor(object):
         Interpret each operation in opslist and return in drawlist.
         """
         drawlist = []
-        path = []
+        path = [] 
+        
         for operand, operator in opslist :
             g = self.gstate
+            
+            
+            if isinstance( operator , bytes) :
+            
+                import pdb
+                pdb.set_trace()
+                # coerce operator to text 
+                operator = operator.decode()
+            
             if operator == 'cm' and operand:        # new transformation matrix
                 # some operands need inverting because directions of y axis
                 # in pdf and graphics context are opposite
@@ -1080,25 +1092,32 @@ class pypdfProcessor(object):
        
     def InsertXObject(self, name):
         """
+        This implements the Do command which inserts an object 
         XObject can be an image or a 'form' (an arbitrary PDF sequence).
+        Objects are now taken from the current object.  They were previously taken 
+        from page object - but forms can be nested so we have to stack them
         """
+        parent_object = self.current_object 
         dlist = []
-        xobject = self.page["/Resources"].getObject()['/XObject']
-        stream = xobject[name]
-        if stream.get('/Subtype') == '/Form':
-            # insert contents into current page drawing
-            if name == '/Fm11' :
-                pass
+        
+        self.current_object = self.current_object["/Resources"].getObject()['/XObject'][name]
+        stream = self.current_object 
+ 
+        if stream.get('/Subtype') == '/Form':  
+        
             if not name in self.formdrawings:       # extract if not already done
                 pdf_fonts = self.FetchFonts(stream)
                 x_bbox = stream.get('/BBox')
                 matrix = stream.get('/Matrix')
                 form_ops = ContentStream(stream, self.pdfdoc).operations
+                form_ops = [ (p,op.decode() if isinstance(op,bytes) else op ) for (p,op) in form_ops ]
                 oplist = [([], 'q'), (matrix, 'cm')]    # push state & apply matrix
                 oplist.extend(form_ops)                 # add form contents
                 oplist.append(([], 'Q'))                # restore original state
                 self.formdrawings[name] = self.ProcessOperators(oplist, pdf_fonts)
+                
             dlist.extend(self.formdrawings[name])
+            
         elif stream.get('/Subtype') == '/Image':
             width = stream['/Width']
             height = stream['/Height']
@@ -1256,6 +1275,11 @@ class pypdfProcessor(object):
                     
             dlist.append(  ['DrawBitmap', (bitmap, 0, 0-height, width, height), {}] )
             return dlist
+        
+        
+        print( f'end of xobject{name}  unstacking ') 
+        self.current_object = parent_object  
+
 
 
     def InlineImage(self, operand):
