@@ -870,7 +870,6 @@ class pypdfProcessor(object):
                 if spacing:
                     print('PDF operator {} has spacing unimplemented (operand {})'.format(operator, operand))
             elif operator == 'Do':      # invoke named XObject
-                print( f'Do operator invoking named XObject {operand[0]} {self.page=} {self.current_object} ' ) 
                 dlist = self.InsertXObject(operand[0])
                 if dlist:               # may be unimplemented decode
                     drawlist.extend(dlist)
