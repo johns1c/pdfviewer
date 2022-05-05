@@ -54,7 +54,15 @@ except ImportError:
         # see http://pythonhosted.org/PyPDF2
         import PyPDF2
         from PyPDF2 import PdfFileReader
-        from PyPDF2.pdf import ContentStream, PageObject
+        try:
+            from PyPDF2.pdf import PageObject
+        except ImportError :
+            from PyPDF2._page import PageObject        
+        try:
+            from PyPDF2.pdf import ContentStream
+        except ImportError:
+            from PyPDF2.generic import ContentStream
+          
         from PyPDF2.filters import ASCII85Decode, FlateDecode , LZWDecode, CCITTFaxDecode  
         from PyPDF2.toUnicode import FetchFontExtended , as_text
         from PyPDF2.utils import glyph2unicode 
@@ -864,6 +872,7 @@ class pypdfProcessor(object):
                 if spacing:
                     print('PDF operator {} has spacing unimplemented (operand {})'.format(operator, operand))
             elif operator == 'Do':      # invoke named XObject
+                if VERBOSE: print( f'Do operator invoking named XObject {operand[0]} {self.page=} {self.current_object} ' ) 
                 dlist = self.InsertXObject(operand[0])
                 if dlist:               # may be unimplemented decode
                     drawlist.extend(dlist)
@@ -918,7 +927,7 @@ class pypdfProcessor(object):
         elif pdfont.count('symbol'):
             family = wx.FONTFAMILY_DEFAULT
             font = 'Symbol'
-        elif pdfont.count('ingbats'):
+        elif pdfont.count('zapfdingbats'):
             family = wx.FONTFAMILY_DEFAULT
             font = 'Wingdings'
            
@@ -927,7 +936,7 @@ class pypdfProcessor(object):
                 pass
             else :
                 missing_fonts.append( pdfont ) 
-                if VERBOSE: print('Unknown font %s' % pdfont)
+            if VERBOSE: print('Unknown font %s' % pdfont)
             self.knownfont = False
             family = wx.FONTFAMILY_SWISS
             font = 'Arial'
@@ -1101,7 +1110,8 @@ class pypdfProcessor(object):
         Objects are now taken from the current object.  They were previously taken 
         from page object - but forms can be nested so we have to stack them
         """
-        parent_object = self.current_object 
+        parent_object = self.current_object
+        is_page_resource = parent_object['/Type'] ==  '/Page'         
         dlist = []
         
         if VERBOSE: print( f"Inserting {name} page resource {is_page_resource} " )
@@ -1122,12 +1132,6 @@ class pypdfProcessor(object):
         if stream.get('/Subtype') == '/Form':
             # insert contents into current page drawing
             if VERBOSE: print( "Handling /Form ") 
-        self.current_object = self.current_object["/Resources"].getObject()['/XObject'][name]
-        stream = self.current_object 
- 
-        if stream.get('/Subtype') == '/Form':  
-        
-
             if not name in self.formdrawings:       # extract if not already done
                 pdf_fonts = self.FetchFonts(stream)
                 x_bbox = stream.get('/BBox')
@@ -1154,10 +1158,6 @@ class pypdfProcessor(object):
                     if VERBOSE:  print( "Colour NOT indexed - in fact no colour at all" )                 
                 elif "/Indexed" in x_color :
                     if VERBOSE: print( f"x_colour stream for indexed image {x_color} " )
-=======
-                    print( 'Image with No /ColorSpace' ) 
-                elif "/Indexed" in x_color :
->>>>>>> merge rev
                     xc = x_color
                     x_indexed = True
                     x_palette_size = x_color[2]
@@ -1183,9 +1183,10 @@ class pypdfProcessor(object):
             x_stencil = stream[ '/ImageMask'  ]
             
             compressed_length = len(stream._data) 
-            print( f'compressed stream length {compressed_length} ' )
+            print( f'compressed stream length {compressed_length} {type(stream._data)}' )
             data = self.UnpackImage( stream._data, filters, decode_parms)
             
+            print( f"Image {x_color}   {width} x {height} x {x_depth} data length={len(data)} " )
             #JPEG image is self defining 
             if '/DCT' in filters or '/DCTDecode' in filters:
                 istream = BytesIO(data)
@@ -1258,8 +1259,7 @@ class pypdfProcessor(object):
             if x_masked == None:
                 pass
             elif  isinstance( x_masked , list)  : 
-                if VERBOSE:
-                     print( 'Image is masked' )
+                if VERBOSE: print( 'Image is masked' )
                 ck_bytes = bytes( bytearray( x_masked )  )
                 
                 ( r1,r9,g1,g9,b1,b9) = x_masked
@@ -1325,6 +1325,7 @@ class pypdfProcessor(object):
         """ type of image is inferred from decode parameters"""
         dlist = []
         data = operand.get('data')
+        assert isinstance( data , bytes ) 
         settings = operand.get('settings')
         width = settings['/W']
         height = settings['/H']
@@ -1343,7 +1344,7 @@ class pypdfProcessor(object):
         if item:            # may be unimplemented
             dlist.append(item)
         return dlist
-    
+
     def UnpackImage(self , data , filters , decode_parms) :
         if '/LZWDecode' in filters :
             data = LZWDecode.decode(data)
@@ -1353,6 +1354,7 @@ class pypdfProcessor(object):
             data = FlateDecode.decode(data, None)
         if '/CCF' in filters or  '/CCITTFaxDecode' in filters:
             data = CCITTFaxDecode.decode(data, decodeParms=decode_parms)   
+        assert isinstance(data, bytes)     
         return data
         
     def FixColour(  self, RGBdata , colour_key_limits  , colour_key_fix) :
@@ -1470,8 +1472,8 @@ class pypdfProcessor(object):
             except:
                 
                 from PIL import Image
-
-                image = Image.frombytes(image_format, (width,height), data)
+                
+                image = Image.frombytes(image_mode, (width,height), data)
                 print( "Bitmap from buffer image display problem" ) 
                 
                 return []       # any error
@@ -1586,6 +1588,8 @@ class pdfState(object):
         '''
         #xobject = self.page["/Resources"].getObject()['/ExtGState']
         #stream = xobject[name]
+        
+        if VERBOSE: print ( "Loading extended graphics state " , resource )
         
         for EGS in resource.keys() :
             EGV = resource.get( EGS )
