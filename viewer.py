@@ -1173,7 +1173,7 @@ class pypdfProcessor(object):
                     x_palette = x_color[3]
                     if isinstance( x_palette , PyPDF2.generic.IndirectObject ):
                         x_palette = x_palette.getObject()
-                        if isinstance( x_palette , PyPDF2.generic.EncodedStreamObject ) :
+                        if isinstance( x_palette , (PyPDF2.generic.EncodedStreamObject, PyPDF2.generic.DecodedStreamObject) ) :
                             x_palette = x_palette.getData()
                     else :
                         if VERBOSE: print( "palette is in line " )
