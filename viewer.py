@@ -1118,6 +1118,8 @@ class pypdfProcessor(object):
         Objects are now taken from the current object.  They were previously taken
         from page object - but forms can be nested so we have to stack them
         """
+        
+        PDF_STREAM_TYPES =  (PyPDF2.generic.EncodedStreamObject, PyPDF2.generic.DecodedStreamObject)
 
         is_page_resource = self.current_object == self.page
         parent_object = self.current_object
@@ -1173,7 +1175,7 @@ class pypdfProcessor(object):
                     x_palette = x_color[3]
                     if isinstance( x_palette , PyPDF2.generic.IndirectObject ):
                         x_palette = x_palette.getObject()
-                        if isinstance( x_palette , (PyPDF2.generic.EncodedStreamObject, PyPDF2.generic.DecodedStreamObject) ) :
+                        if isinstance( x_palette , PDF_STREAM_TYPES ) :
                             x_palette = x_palette.getData()
                     else :
                         if VERBOSE: print( "palette is in line " )
