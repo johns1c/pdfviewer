@@ -9,6 +9,12 @@
 #
 # History:      Created 17 Jun 2009
 #
+#    Chris Johnson May 2022
+#               Now accepts images which are NOT compressed and therefor
+#               without /Filter parameter.
+#               Images with /ICCBased colour now fall back to appropriate
+#               /DeviceXXX model (including /Indexed)
+#
 #    Chris Johnson October 2021
 #               Do command improvements (insert of Xobject)
 #               Text handling with improved PyPDF2
@@ -90,6 +96,10 @@ if not mupdf:
         occur in the content stream
         """
         ops = []
+        if "/Contents" not in self :
+            print( "Page has no content" )
+            return ops
+
         try:
             content = self["/Contents"].getObject()
         except :
@@ -216,7 +226,7 @@ class pdfViewer(wx.ScrolledWindow):
         a filename path or a file-like object.
         """
         print( 'viewer LoadFile loading {} ...'.format(pdf_file) )
-        print( type(pdf_file)  , isinstance(pdf_file, string_types) )
+
         def create_fileobject(filename):
             """
             Create and return a file object with the contents of filename,
@@ -370,7 +380,7 @@ class pdfViewer(wx.ScrolledWindow):
 
         self.winwidth, self.winheight = self.GetClientSize()
         if self.winheight < 100:
-            print( 'window height to small to display ? ' )
+            print( f'window height {self.winheight} too small to display ? ' )
             return
         self.Ypage = self.pageheight + self.nom_page_gap
         if self.zoomscale > 0.0:
@@ -643,6 +653,9 @@ class pypdfProcessor(object):
         this so scaling is removed from transform and width & height are added
         to the Drawbitmap call.
         """
+        if pageno > len( self.pagedrawings )  - 1 :
+            pageno = len( self.pagedrawings ) - 1
+
         drawdict = {'ConcatTransform': gc.ConcatTransform,
                     'PushState': gc.PushState,
                     'PopState': gc.PopState,
@@ -653,7 +666,7 @@ class pypdfProcessor(object):
                     'DrawBitmap': gc.DrawBitmap,
                     'CreatePath': gc.CreatePath,
                     'DrawPath': gc.DrawPath }
-        print ( f'rendering {pageno=} of {len(self.pagedrawings)} ', flush=True )
+
         for drawcmd, args, kwargs in self.pagedrawings[pageno]:
             # scale font if requested by printer DC
             if drawcmd == 'SetFont' and hasattr(gc, 'font_scale'):
@@ -706,13 +719,13 @@ class pypdfProcessor(object):
             if '/Resources' in currentobject :
                 raise
         except KeyError:
-            print( f'£$ key error getting font {key=}{fonts[key]}  ')
+            print( f'key error getting font {key=}{fonts[key]}  ')
             pass
         except TypeError:    # None is not iterable
             if fonts is None :
                 pass
             else :
-                print( f'£$ key error getting font {key=} {fonts[key]} ')
+                print( f'key error getting font {key=} {fonts[key]} ')
                 pass
         return pdf_fonts
 
@@ -1099,7 +1112,6 @@ class pypdfProcessor(object):
         """
         Stroke and/or fill the defined path depending on operator.
         """
-        print( 'Clipping paths not implemented' )
         dlist = []
         g = self.gstate
 
@@ -1118,7 +1130,7 @@ class pypdfProcessor(object):
         Objects are now taken from the current object.  They were previously taken
         from page object - but forms can be nested so we have to stack them
         """
-        
+
         PDF_STREAM_TYPES =  (PyPDF2.generic.EncodedStreamObject, PyPDF2.generic.DecodedStreamObject)
 
         is_page_resource = self.current_object == self.page
@@ -1167,10 +1179,23 @@ class pypdfProcessor(object):
             try :
                 if x_color is None :
                     if VERBOSE:  print( "Colour NOT indexed - in fact no colour at all" )
-                elif "/Indexed" in x_color :
-                    if VERBOSE: print( f"x_colour stream for indexed image {x_color} " )
+
+                elif "/Indexed" in x_color:
+                    if VERBOSE:
+                        p_color = [ x.getObject() for x in x_color ]
+                        print( f"x_colour stream for indexed image {p_color} " )
+
+                    # we expect  /indexed dest_color_space length palette
+                    # if palette translates to /ICCBased colour we determine the nearest
+                    # Device space as specified or based on number of colours
+
                     xc = x_color
+
                     x_indexed = True
+                    icc_based = False
+                    icc_n = 3
+                    icc_alternate = None
+
                     x_palette_size = x_color[2]
                     x_palette = x_color[3]
                     if isinstance( x_palette , PyPDF2.generic.IndirectObject ):
@@ -1179,14 +1204,149 @@ class pypdfProcessor(object):
                             x_palette = x_palette.getData()
                     else :
                         if VERBOSE: print( "palette is in line " )
+
+
                     x_color = x_color[1]
                     if isinstance( x_color , PyPDF2.generic.IndirectObject ):
                         x_color = x_color.getObject()
+
+                        if '/ICCBased' in x_color :
+                            icc_based = True
+                        if '/N' in x_color :
+                            icc_n =  x_color['/N']
+                        if '/Alternate' in x_color :
+                            icc_alternate = x_color['/Alternate' ]
+
+                    if icc_based :
+                        if icc_alternate is not None :
+                            x_color = icc_alternate
+                        elif icc_n == 1 :
+                            x_color = '/DeviceGray'
+                        elif icc_n == 3 :
+                            x_color = '/DeviceRGB'
+                        elif icc_n == 4 :
+                            x_color = '/DeviceCMYK'
+                        else :
+                            x_color = '/DeviceRGB'
+
+                elif "ICCBased" in x_color:
+                    if VERBOSE:
+                        p_color = [ x.getObject() for x in x_color ]
+                        print( f"x_colour stream for indexed image {p_color} " )
+
+                    # we have /ICCBased without /Indexed
+                    # Device space as specified or based on number of colours
+
+                    xc = x_color
+
+                    x_indexed = False
+                    icc_based = True
+                    icc_n = 3
+                    icc_alternate = None
+
+                    if isinstance( x_palette , PyPDF2.generic.IndirectObject ):
+                        x_palette = x_palette.getObject()
+                        if isinstance( x_palette , PDF_STREAM_TYPES ) :
+                            x_palette = x_palette.getData()
+                    else :
+                        if VERBOSE: print( "palette is in line " )
+
+
+                    if VERBOSE:
+                        p_color = [ x.getObject() for x in x_color ]
+                        print( f"x_colour stream for indexed image {p_color} " )
+
+                    # we expect  /indexed dest_color_space length palette
+                    # if palette translates to /ICCBased colour we determine the nearest
+                    # Device space as specified or based on number of colours
+
+                    xc = x_color
+
+                    x_indexed = True
+                    icc_based = False
+                    icc_n = 3
+                    icc_alternate = None
+
+                    x_palette_size = x_color[2]
+                    x_palette = x_color[3]
+                    if isinstance( x_palette , PyPDF2.generic.IndirectObject ):
+                        x_palette = x_palette.getObject()
+                        if isinstance( x_palette , PDF_STREAM_TYPES ) :
+                            x_palette = x_palette.getData()
+                    else :
+                        if VERBOSE: print( "palette is in line " )
+
+
+                    x_color = x_color[1]
+                    if isinstance( x_color , PyPDF2.generic.IndirectObject ):
+                        x_color = x_color.getObject()
+
+                        if '/ICCBased' in x_color :
+                            icc_based = True
+                        if '/N' in x_color :
+                            icc_n =  x_color['/N']
+                        if '/Alternate' in x_color :
+                            icc_alternate = x_color['/Alternate' ]
+
+                    if icc_based :
+                        if icc_alternate is not None :
+                            x_color = icc_alternate
+                        elif icc_n == 1 :
+                            x_color = '/DeviceGray'
+                        elif icc_n == 3 :
+                            x_color = '/DeviceRGB'
+                        elif icc_n == 4 :
+                            x_color = '/DeviceCMYK'
+                        else :
+                            x_color = '/DeviceRGB'
+
+
+
+                elif "/ICCBased" in x_color:
+                    # we cannot handle ICCBased color mappoings
+                    # but device colour will do
+
+                    if VERBOSE:
+                        p_color = [ x.getObject() for x in x_color ]
+                        print( f"x_colour stream for ICC based image {p_color} " )
+
+
+                    xc = x_color
+
+                    x_indexed = False
+                    icc_based = True
+                    icc_n = 3
+                    icc_alternate = None
+
+
+                    x_color = x_color[1]
+                    if isinstance( x_color , PyPDF2.generic.IndirectObject ):
+                        x_color = x_color.getObject()
+                        if '/N' in x_color :
+                            icc_n =  x_color['/N']
+                        if '/Alternate' in x_color :
+                            icc_alternate = x_color['/Alternate' ]
+
+                    if icc_based :
+                        if icc_alternate is not None :
+                            x_color = icc_alternate
+                        elif icc_n == 1 :
+                            x_color = '/DeviceGray'
+                        elif icc_n == 3 :
+                            x_color = '/DeviceRGB'
+                        elif icc_n == 4 :
+                            x_color = '/DeviceCMYK'
+                        else :
+                            x_color = '/DeviceRGB'
+
+
                 else:
                     if VERBOSE:  print( "Colour NOT indexed" )
             except :
                 if VERBOSE: print( 'Issue with indexed colour image stream->' , stream)
                 raise
+
+
 
             filters = stream["/Filter"]
             decode_parms = stream[ "/DecodeParms" ]
@@ -1194,12 +1354,11 @@ class pypdfProcessor(object):
             x_stencil = stream[ '/ImageMask'  ]
 
             compressed_length = len(stream._data)
-            print( f'compressed stream length {compressed_length} {type(stream._data)}' )
             data = self.UnpackImage( stream._data, filters, decode_parms)
 
-            print( f"Image {x_color}   {width} x {height} x {x_depth} data length={len(data)} " )
+            if VERBOSE: print( f"Image {x_color}   {width} x {height} x {x_depth} data length={len(data)} " )
             #JPEG image is self defining
-            if '/DCT' in filters or '/DCTDecode' in filters:
+            if filters is not None and ( '/DCT' in filters or '/DCTDecode' in filters) :
                 istream = BytesIO(data)
                 image = wx.Image(istream, wx.BITMAP_TYPE_JPEG)
                 bitmap = wx.Bitmap(image)
@@ -1213,7 +1372,7 @@ class pypdfProcessor(object):
                     print( 'Error creating bitmap w={} h={} data length {} (should be w x h x 3 )'.format(width,height,len(data) ) )
 
             elif  (x_color is None and x_depth != 1 ) :
-                print( 'Unable to print image with no colour space unless 1 bit b&W' )
+                print( 'Image has no color space (should this program handle as 1 bit B&W)' )
 
 
             elif x_indexed and x_color == '/DeviceRGB' :
@@ -1283,9 +1442,9 @@ class pypdfProcessor(object):
 
             else   :
                 x_mo     = stream["/Mask"].getObject()
-                if VERBOSE: print("     >" , x_mo     )
+                if VERBOSE: print("Image Mask " , x_mo     )
 
-                filters, decode_parms
+                # filters, decode_parms
                 mask_filters       = x_mo[ '/Filter']
                 mask_decode_parms  = x_mo[ "/DecodeParms" ]
                 mask_data = x_mo._data
@@ -1326,7 +1485,7 @@ class pypdfProcessor(object):
 
 
 
-        print( f'end of xobject{name}  unstacking ')
+        if VERBOSE: print( f'end of xobject{name}  unstacking ')
         self.current_object = parent_object
         return dlist
 
@@ -1358,6 +1517,10 @@ class pypdfProcessor(object):
         return dlist
 
     def UnpackImage(self , data , filters , decode_parms) :
+        if filters is None:  # not packed
+            return data
+
+
         if '/LZWDecode' in filters :
             data = LZWDecode.decode(data)
         if '/A85' in filters or '/ASCII85Decode' in filters:
@@ -1486,7 +1649,7 @@ class pypdfProcessor(object):
                 from PIL import Image
 
                 image = Image.frombytes(image_mode, (width,height), data)
-                print( "Bitmap from buffer image display problem" )
+                if VERBOSE: print( "Bitmap from buffer image display problem" )
 
                 return []       # any error
         return ['DrawBitmap', (bitmap, 0, 0-height, width, height), {}]
@@ -1607,7 +1770,7 @@ class pdfState(object):
             EGV = resource.get( EGS )
             if EGS == '/Type' :
                  if EGV !=   '/ExtGState' :
-                    print(  "/ExtGState resource has bad /Type of {} ".format( EGV ) )
+                    if VERBOSE: print(  "/ExtGState resource has bad /Type of {} ".format( EGV ) )
             elif EGS ==  "/SA" :
                 self.automaticStrokeAdjustment = EGV
             elif EGS ==  "/BM" :
